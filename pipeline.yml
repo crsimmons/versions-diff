@@ -1,0 +1,100 @@
+---
+resources:
+- name: concourse-up-release
+  type: github-release
+  source:
+    user: engineerbetter
+    repository: concourse-up
+    access_token: ((github_access_token))
+- name: concourse-up-ops
+  type: git
+  source:
+    uri: git@github.com:EngineerBetter/concourse-up-ops.git
+    branch: master
+    tag_filter: 0.*.*
+    private_key: ((github_private_key))
+    paths:
+    - manifest.yml
+    - director-versions.json
+    - ops/versions.json
+- name: image
+  type: docker-image
+  source:
+    repository: engineerbetter/pcf-ops
+
+jobs:
+- name: get-diff
+  plan:
+  - aggregate:
+    - get: concourse-up-release
+    - get: concourse-up-ops
+      trigger: true
+    - get: image
+  - task: get-diff
+    image: image
+    config:
+      platform: linux
+      inputs:
+      - name: concourse-up-release
+      - name: concourse-up-ops
+      run:
+        path: ruby
+        args:
+          - -e
+          - |
+            require 'json'
+
+            def build_hash()
+              Dir.chdir("concourse-up-ops") do
+                director_versions = JSON.parse(File.read('director-versions.json'))
+                concourse_versions = JSON.parse(File.read('ops/versions.json'))
+
+                d = director_versions.map do |k,v|
+                  case k
+                  when 'fly', 'terraform', 'bosh-cli'
+                    {k => v['linux']}
+                  when 'stemcell'
+                    {'director_stemcell' => v['url']}
+                  else
+                    {k => v["version"]}
+                  end
+                end
+
+                c = concourse_versions.map do |e|
+                  value = e['value']
+                  if e['path'].include? 'stemcells'
+                    {'concourse_stemcell' => value}
+                  else
+                    {value['name'] => value['version']}
+                  end
+                end
+                d + c
+              end
+            end
+
+            def xor(a1, a2)
+              a1 + a2 - (a1 & a2)
+            end
+
+            new = build_hash
+
+            tag = File.foreach('concourse-up-release/body').grep(/concourse-up-ops\/tree\/(\d+\.\d+\.\d+)/){$1}[0]
+
+            Dir.chdir("concourse-up-ops") do
+              `git checkout #{tag}`
+            end
+
+            old = build_hash
+
+            r = xor(old, new).sort_by{|e| e.keys.first}
+
+            output = []
+            r.each_slice(2) do |s|
+              key = s.first.keys.first
+              arr = s.sort_by{|e| Gem::Version.new(e[key])}
+              output.push("#{key} #{arr.first[key]} => #{arr.last[key]}")
+            end
+
+            puts "\n\n============================================================\n"
+            puts "Version changes in the next release:\n#{output.join("\n")}"
+            puts "============================================================"
