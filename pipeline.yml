@@ -52,7 +52,7 @@ jobs:
                 d = director_versions.map do |k,v|
                   case k
                   when 'fly', 'terraform', 'bosh-cli'
-                    {k => v['linux']}
+                    {k => v['linux'].match(/\d+\.\d+\.\d+/)[0]}
                   when 'stemcell'
                     {'director_stemcell' => v['url']}
                   else
